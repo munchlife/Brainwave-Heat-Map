@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Brainwave Heatmap</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/muse-js/3.3.0/muse.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #f0f0f0;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .button {
+            background: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            width: 100%;
+            margin-bottom: 20px;
+        }
+        .button:disabled {
+            background: #cccccc;
+        }
+        .heatmap {
+            width: 100%;
+            height: 256px;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .status {
+            margin-top: 10px;
+            font-size: 14px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Brainwave Heatmap</h1>
+        <button id="checkIn" class="button">Check In</button>
+        <div id="heatmap" class="heatmap"></div>
+        <div id="status" class="status">Connected Users: 0</div>
+    </div>
+
+    <script>
+        class HilbertTransform {
+            constructor(signal) {
+                this.signal = signal;
+                this.N = signal.length;
+            }
+
+            getPhase() {
+                const fft = this.fft(this.signal);
+                const h = new Array(this.N).fill(0);
+                const mid = Math.floor(this.N / 2);
+                for (let i = 1; i < mid; i++) {
+                    h[i] = 2;
+                }
+                h[0] = 1;
+                h[mid] = 1;
+                const filtered = fft.map((x, i) => x * h[i]);
+                const analytic = this.ifft(filtered);
+                return analytic.map(z => Math.atan2(z.imag, z.real));
+            }
+
+            fft(x) {
+                return x.map(val => ({ real: val, imag: 0 }));
+            }
+
+            ifft(X) {
+                return X;
+            }
+        }
+
+        const calculatePLV = (signals) => {
+            const phases = signals.map(signal => {
+                const hilbert = new HilbertTransform(signal);
+                return hilbert.getPhase();
+            });
+
+            const plvMatrix = [];
+            for (let i = 0; i < phases.length; i++) {
+                plvMatrix[i] = [];
+                for (let j = 0; j < phases.length; j++) {
+                    if (i === j) {
+                        plvMatrix[i][j] = 1;
+                        continue;
+                    }
+                    const phase1 = phases[i];
+                    const phase2 = phases[j];
+                    const phaseDiff = phase1.map((p1, idx) => p1 - phase2[idx]);
+                    const plv = Math.abs(phaseDiff.reduce((sum, diff) => 
+                        sum + Math.exp(1j * diff), 0)) / phaseDiff.length;
+                    plvMatrix[i][j] = plv;
+                }
+            }
+            return plvMatrix;
+        };
+
+        const calculateGroupPLV = (plvMatrix) => {
+            let sum = 0;
+            let count = 0;
+            for (let i = 0; i < plvMatrix.length; i++) {
+                for (let j = i + 1; j < plvMatrix.length; j++) {
+                    sum += plvMatrix[i][j];
+                    count++;
+                }
+            }
+            return sum / count;
+        };
+
+        const updateHeatmap = (value) => {
+            const heatmap = document.getElementById('heatmap');
+            const colors = ['#fff5f7', '#feb2b2', '#f56565', '#c53030'];
+            const normalizedValue = Math.max(0, Math.min(1, value));
+            const colorIndex = Math.floor(normalizedValue * (colors.length - 1));
+            heatmap.style.backgroundColor = colors[colorIndex];
+        };
+
+        let connectedUsers = [];
+        let muse = null;
+
+        document.getElementById('checkIn').addEventListener('click', async () => {
+            try {
+                const client = new MuseClient();
+                await client.connect();
+                await client.start();
+
+                const userId = Math.random().toString(36).substr(2, 9);
+                muse = { client, userId };
+
+                client.eegReadings.subscribe(reading => {
+                    const signals = reading.samples;
+                    updatePLV(signals, userId);
+                });
+
+                document.getElementById('checkIn').disabled = true;
+            } catch (error) {
+                console.error('Error connecting to Muse:', error);
+                alert('Error connecting to Muse device. Please make sure your device is powered on and try again.');
+            }
+        });
+
+        const updatePLV = (newSignals, userId) => {
+            const userIndex = connectedUsers.findIndex(u => u.id === userId);
+            
+            if (userIndex === -1) {
+                connectedUsers.push({ id: userId, signals: newSignals });
+            } else {
+                connectedUsers[userIndex].signals = newSignals;
+            }
+
+            const allSignals = connectedUsers.map(u => u.signals);
+            const plvMatrix = calculatePLV(allSignals);
+            const groupPLV = calculateGroupPLV(plvMatrix);
+
+            updateHeatmap(groupPLV);
+            document.getElementById('status').textContent = `Connected Users: ${connectedUsers.length}`;
+        };
+    </script>
+</body>
+</html>
